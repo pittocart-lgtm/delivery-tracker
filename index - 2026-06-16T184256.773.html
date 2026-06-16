@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>納期確認 | LIAS</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#FAF8F5; --surface:#FFFFFF; --ink:#1F2A37; --muted:#6B7280;
+    --line:#EDE8E1; --jade:#0E7C7B; --jade-soft:#E6F2F1; --coral:#E07856; --coral-soft:#FCEDE7;
+    --amber:#C7903A;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans JP","Zen Kaku Gothic New",sans-serif;-webkit-font-smoothing:antialiased}
+  .display{font-family:"Zen Kaku Gothic New",sans-serif}
+  .mono{font-family:"JetBrains Mono",monospace;font-variant-numeric:tabular-nums}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px}
+  .track-line{height:2px;background:var(--line);flex:1}
+  .track-line.done{background:var(--jade)}
+  .node{width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid var(--line);flex:none;transition:.2s}
+  .node.done{background:var(--jade);border-color:var(--jade)}
+  .node.current{background:#fff;border-color:var(--jade);box-shadow:0 0 0 4px var(--jade-soft)}
+  .btn{transition:.15s;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+  input,select,textarea{font-family:inherit}
+  .field{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;width:100%}
+  .field:focus{outline:none;border-color:var(--jade);box-shadow:0 0 0 3px var(--jade-soft)}
+  details summary{list-style:none;cursor:pointer}
+  details summary::-webkit-details-marker{display:none}
+  .chev{transition:.2s}
+  details[open] .chev{transform:rotate(90deg)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ ヘッダー ═══════════════ -->
+<header class="sticky top-0 z-20" style="background:rgba(250,248,245,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)">
+  <div class="max-w-3xl mx-auto px-5 py-3.5 flex items-center justify-between">
+    <div class="flex items-baseline gap-2.5">
+      <span class="display font-black tracking-tight text-lg" style="color:var(--jade)">LIAS</span>
+      <span class="text-sm" style="color:var(--muted)">納期確認</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="modeBadge" class="text-xs px-2.5 py-1 rounded-full mono" style="background:var(--jade-soft);color:var(--jade)">確認モード</span>
+      <button id="adminToggle" class="btn text-xs px-3 py-1.5 rounded-full" style="border:1px solid var(--line);color:var(--muted)">管理ログイン</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-3xl mx-auto px-5 py-7">
+
+  <!-- 概要 -->
+  <div class="mb-6">
+    <h1 class="display font-bold text-2xl mb-1.5">ご注文の納期状況</h1>
+    <p class="text-sm leading-relaxed" style="color:var(--muted)">
+      商品ごとに現在の段階と納期の目安を表示しています。状況が変わると、この画面が更新されます。<br>
+      <span id="syncNote" class="mono text-xs"></span>
+    </p>
+  </div>
+
+  <!-- 管理者バー（管理モード時のみ） -->
+  <div id="adminBar" class="hidden card p-3 mb-5 flex items-center gap-2 flex-wrap" style="border-color:var(--jade);background:var(--jade-soft)">
+    <span class="text-sm font-medium" style="color:var(--jade)">管理モード</span>
+    <span class="text-xs" style="color:var(--muted)">— 各項目をタップで編集できます</span>
+    <div class="flex-1"></div>
+    <button onclick="openImport()" class="btn text-sm px-3 py-1.5 rounded-lg font-medium" style="border:1px solid var(--jade);color:var(--jade);background:#fff">CSV取込</button>
+    <button onclick="addOrder()" class="btn text-sm px-3 py-1.5 rounded-lg text-white font-medium" style="background:var(--jade)">＋ 注文を追加</button>
+    <button onclick="logoutAdmin()" class="btn text-sm px-3 py-1.5 rounded-lg" style="border:1px solid var(--line);background:#fff">ログアウト</button>
+  </div>
+
+  <!-- 注文リスト -->
+  <div id="orders" class="space-y-4"></div>
+
+  <div id="empty" class="hidden text-center py-16" style="color:var(--muted)">
+    <p class="text-sm">まだ注文が登録されていません。</p>
+  </div>
+</main>
+
+<footer class="max-w-3xl mx-auto px-5 py-8 text-center">
+  <p class="text-xs" style="color:var(--muted)">リアス株式会社　LIAS Co., Ltd.</p>
+</footer>
+
+<!-- ═══════════════ CSV取込 モーダル ═══════════════ -->
+<div id="importModal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-4" style="background:rgba(31,42,55,.4)">
+  <div class="card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+    <h3 class="display font-bold text-lg mb-1">CSV取込</h3>
+    <p class="text-xs mb-4" style="color:var(--muted)">Bcart等の受注CSVを取り込みます。取込後、納期と段階を設定してください。</p>
+
+    <!-- STEP1: ファイル選択 -->
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+      <input type="file" id="csvFile" accept=".csv,.txt" class="text-sm" onchange="parseCsv()">
+      <select id="csvEnc" class="field text-sm" style="width:auto" onchange="parseCsv()">
+        <option value="auto">文字コード: 自動判定</option>
+        <option value="shift_jis">Shift-JIS</option>
+        <option value="utf-8">UTF-8</option>
+      </select>
+    </div>
+
+    <!-- STEP2: 列マッピング -->
+    <div id="mapArea" class="hidden">
+      <p class="text-xs font-medium mb-2" style="color:var(--jade)">列の対応を確認してください</p>
+      <div class="space-y-2 mb-4">
+        <div class="grid grid-cols-2 gap-2 items-center"><label class="text-sm">注文番号</label><select id="mapOrderNo" class="field text-sm"></select></div>
+        <div class="grid grid-cols-2 gap-2 items-center"><label class="text-sm">注文日</label><select id="mapDate" class="field text-sm"></select></div>
+        <div class="grid grid-cols-2 gap-2 items-center"><label class="text-sm">商品名 <span style="color:var(--coral)">*</span></label><select id="mapProduct" class="field text-sm"></select></div>
+        <div class="grid grid-cols-2 gap-2 items-center"><label class="text-sm">数量</label><select id="mapQty" class="field text-sm"></select></div>
+        <div class="grid grid-cols-2 gap-2 items-center"><label class="text-sm">単位</label><select id="mapUnit" class="field text-sm"></select></div>
+      </div>
+
+      <details class="mb-4">
+        <summary class="text-xs font-medium mb-2" style="color:var(--jade)"><span class="chev" style="display:inline-block">▸</span> 詳細設定（段階・納期の自動設定）</summary>
+        <div class="mt-2 space-y-2 p-3 rounded-lg" style="background:var(--bg)">
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="optExclude" checked onchange="updatePreview()">送料・手数料の行を除外する</label>
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="optAutoStage" checked onchange="updatePreview()">CSVの状況から段階・納期を自動設定する</label>
+          <div class="grid grid-cols-2 gap-2 items-center pt-1"><label class="text-xs" style="color:var(--muted)">明細区分</label><select id="mapKubun" class="field text-sm"></select></div>
+          <div class="grid grid-cols-2 gap-2 items-center"><label class="text-xs" style="color:var(--muted)">対応状況</label><select id="mapTaiou" class="field text-sm"></select></div>
+          <div class="grid grid-cols-2 gap-2 items-center"><label class="text-xs" style="color:var(--muted)">発送状況</label><select id="mapShipSt" class="field text-sm"></select></div>
+          <div class="grid grid-cols-2 gap-2 items-center"><label class="text-xs" style="color:var(--muted)">発送日</label><select id="mapShipDate" class="field text-sm"></select></div>
+          <div class="grid grid-cols-2 gap-2 items-center"><label class="text-xs" style="color:var(--muted)">納品日</label><select id="mapDeliv" class="field text-sm"></select></div>
+          <div class="grid grid-cols-2 gap-2 items-center"><label class="text-xs" style="color:var(--muted)">配送希望日</label><select id="mapHope" class="field text-sm"></select></div>
+        </div>
+      </details>
+      <div id="importPreview" class="text-sm p-3 rounded-lg mb-4" style="background:var(--bg);color:var(--muted)"></div>
+    </div>
+
+    <div class="flex gap-2">
+      <button onclick="closeImport()" class="btn flex-1 text-sm py-2 rounded-lg" style="border:1px solid var(--line)">閉じる</button>
+      <button id="importBtn" onclick="runImport()" class="btn flex-1 text-sm py-2 rounded-lg text-white font-medium hidden" style="background:var(--jade)">取り込む</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 管理ログイン モーダル ═══════════════ -->
+<div id="loginModal" class="hidden fixed inset-0 z-40 flex items-center justify-center p-5" style="background:rgba(31,42,55,.4)">
+  <div class="card p-6 w-full max-w-xs">
+    <h3 class="display font-bold text-lg mb-1">管理ログイン</h3>
+    <p class="text-xs mb-4" style="color:var(--muted)">編集するにはパスワードを入力してください。</p>
+    <input id="pwInput" type="password" class="field mono mb-3" placeholder="パスワード" onkeydown="if(event.key==='Enter')tryLogin()">
+    <p id="pwError" class="hidden text-xs mb-3" style="color:var(--coral)">パスワードが違います。</p>
+    <div class="flex gap-2">
+      <button onclick="closeLogin()" class="btn flex-1 text-sm py-2 rounded-lg" style="border:1px solid var(--line)">キャンセル</button>
+      <button onclick="tryLogin()" class="btn flex-1 text-sm py-2 rounded-lg text-white font-medium" style="background:var(--jade)">ログイン</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   設定（ここだけ書き換えれば本番稼働します）
+   ─────────────────────────────────────────────────────────
+   1. Supabaseで下のSQLを実行してテーブルを作成
+   2. SUPABASE_URL と SUPABASE_KEY に自分のプロジェクトの値を貼る
+   3. ADMIN_PASS を任意のパスワードに変更
+   ※ 設定が空のままだと「デモデータ」で動作確認できます
+   ═══════════════════════════════════════════════════════════ */
+const SUPABASE_URL = "https://mtplgtybsulmgaexewmj.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im10cGxndHlic3VsbWdhZXhld21qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1OTg4MTgsImV4cCI6MjA5NzE3NDgxOH0.y9R-OrPUTmhrmAsNFJSIRALqxmJC0xq0EP0TdFixB_s";
+const ADMIN_PASS   = "lias-osaka-2026";   // ←管理ログイン用パスワード。変えたい場合はこの行だけ書き換え
+
+/* 納期の進行段階（順序が意味を持ちます） */
+const STAGES = ["受注","海外発注","輸送中","通関中","入荷済","発送済","納品完了"];
+
+/* ─── 内部状態 ─── */
+let sb = (SUPABASE_URL && SUPABASE_KEY) ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+let isAdmin = false;
+let orders = [];   // {id, order_no, order_date, title, customer_note}
+let items  = [];   // {id, order_id, product_name, qty, unit, note}
+let shipments = []; // {id, item_id, qty, stage, eta, note}  ← 分納（1商品に複数）
+
+/* ─── デモデータ（Supabase未設定時） ─── */
+const demoOrders = [
+  {id:"o1", order_no:"17785534696", order_date:"2026-05-12", title:"", customer_note:""},
+  {id:"o2", order_no:"17725126333", order_date:"2026-03-03", title:"", customer_note:"確認しました。ありがとうございます。"},
+];
+const demoItems = [
+  {id:"i1", order_id:"o1", product_name:"コアトックス100単位(1セット100単位x10箱)", qty:30, unit:"セット", note:""},
+  {id:"i2", order_id:"o1", product_name:"リドカインクリーム500g (10.56%) SMCAIN", qty:19, unit:"箱", note:""},
+  {id:"i3", order_id:"o2", product_name:"ボツラックス300単位(1セット300単位x10箱)", qty:20, unit:"set", note:""},
+];
+const demoShipments = [
+  // コアトックス：分納（10セット納品済 ／ 20セットは通関中）
+  {id:"s1", item_id:"i1", qty:10, stage:6, eta:"2026-05-10", note:""},
+  {id:"s2", item_id:"i1", qty:20, stage:3, eta:"2026-05-25", note:"残20セットは通関手続き中"},
+  // リドカイン：一括 発送済
+  {id:"s3", item_id:"i2", qty:19, stage:5, eta:"2026-05-18", note:""},
+  // ボツラックス：一括 納品完了
+  {id:"s4", item_id:"i3", qty:20, stage:6, eta:"2026-03-07", note:""},
+];
+
+/* ═══════════════ データ取得 ═══════════════ */
+async function load(){
+  if(sb){
+    const {data:o} = await sb.from("orders").select("*").order("order_date",{ascending:false});
+    const {data:i} = await sb.from("order_items").select("*").order("created_at",{ascending:true});
+    const {data:s} = await sb.from("order_shipments").select("*").order("created_at",{ascending:true});
+    orders = o || []; items = i || []; shipments = s || [];
+    setSync("オンライン同期中");
+  }else{
+    orders = JSON.parse(JSON.stringify(demoOrders));
+    items  = JSON.parse(JSON.stringify(demoItems));
+    shipments = JSON.parse(JSON.stringify(demoShipments));
+    setSync("デモ表示（Supabase未設定）");
+  }
+  render();
+}
+function setSync(t){ document.getElementById("syncNote").textContent = t; }
+
+/* ═══════════════ 描画 ═══════════════ */
+function render(){
+  const wrap = document.getElementById("orders");
+  const openIds = new Set([...wrap.querySelectorAll("details[open]")].map(d=>d.dataset.oid));
+  document.getElementById("empty").classList.toggle("hidden", orders.length>0);
+  wrap.innerHTML = orders.map(renderOrder).join("");
+  wrap.querySelectorAll("details").forEach(d=>{ if(openIds.has(d.dataset.oid)) d.open=true; });
+}
+
+function itemsOf(orderId){ return items.filter(i=>i.order_id===orderId); }
+function shipsOf(itemId){ return shipments.filter(s=>s.item_id===itemId); }
+function orderShips(orderId){ const ids=itemsOf(orderId).map(i=>i.id); return shipments.filter(s=>ids.includes(s.item_id)); }
+const LAST = STAGES.length-1;
+
+function renderOrder(o){
+  const its = itemsOf(o.id);
+  const oss = orderShips(o.id);
+  const ss = oss.map(s=>Number(s.stage)||0);
+  let chip;
+  if(oss.length && ss.every(s=>s>=LAST)) chip={t:"納品完了",bg:"var(--jade-soft)",c:"var(--jade)"};
+  else if(ss.some(s=>s>0))               chip={t:"進行中",  bg:"#F7EEDD",        c:"var(--amber)"};
+  else                                   chip={t:"受注",    bg:"var(--bg)",      c:"var(--muted)"};
+
+  const orderNoLabel = o.order_no ? esc(o.order_no) : "（受注番号 未設定）";
+
+  // 管理モード：詳細の先頭に受注番号・受注日の編集欄
+  const adminHead = isAdmin ? `
+    <div class="flex items-end gap-2 pb-3 mb-1" style="border-bottom:1px dashed var(--line)">
+      <div class="flex-1"><label class="text-xs" style="color:var(--muted)">受注番号</label>
+        <input class="field mono mt-0.5" value="${esc(o.order_no||"")}" onchange="upOrder('${o.id}','order_no',this.value)"></div>
+      <div><label class="text-xs" style="color:var(--muted)">受注日</label>
+        <input type="date" class="field mono mt-0.5" value="${o.order_date||""}" onchange="upOrder('${o.id}','order_date',this.value)"></div>
+      <button onclick="delOrder('${o.id}')" class="btn text-xs px-2 py-2 rounded" style="color:var(--coral)">削除</button>
+    </div>` : "";
+
+  return `
+  <details class="card overflow-hidden" data-oid="${o.id}">
+    <summary class="p-4 flex items-center gap-3" style="background:var(--surface)">
+      <svg class="chev flex-none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2.5"><path d="M9 6l6 6-6 6"/></svg>
+      <div class="flex-1 min-w-0">
+        <div class="mono font-bold text-base tracking-tight" style="${o.order_no?'':'color:var(--muted);font-weight:500'}">${orderNoLabel}</div>
+        <div class="flex items-center gap-3 mt-0.5 text-xs" style="color:var(--muted)">
+          <span class="mono">${fmtFull(o.order_date)||"日付未設定"}</span>
+          <span>${its.length}品目</span>
+        </div>
+      </div>
+      <span class="text-xs font-bold px-2.5 py-1 rounded-full flex-none" style="background:${chip.bg};color:${chip.c}">${chip.t}</span>
+    </summary>
+    <div class="px-4 pb-4 space-y-3" style="border-top:1px solid var(--line);padding-top:14px">
+      ${adminHead}
+      ${its.map(renderItem).join("") || `<p class="text-sm" style="color:var(--muted)">品目がありません</p>`}
+      ${isAdmin?`<button onclick="addItem('${o.id}')" class="btn text-sm w-full py-2 rounded-lg" style="border:1px dashed var(--line);color:var(--jade)">＋ 商品を追加</button>`:""}
+      ${renderNote(o)}
+    </div>
+  </details>`;
+}
+
+function trackHtml(stage){
+  let t = `<div class="flex items-center mt-2 mb-1.5">`;
+  for(let s=0;s<STAGES.length;s++){
+    const cls = s<stage?"done":(s===stage?"current":"");
+    t += `<span class="node ${cls}"></span>`;
+    if(s<STAGES.length-1) t += `<span class="track-line ${s<stage?"done":""}"></span>`;
+  }
+  return t + `</div>`;
+}
+
+function renderItem(i){
+  const ships = shipsOf(i.id);
+  const ordered = Number(i.qty)||0;
+  const delivered = ships.filter(s=>(Number(s.stage)||0)>=LAST).reduce((a,s)=>a+(Number(s.qty)||0),0);
+  const remaining = ordered - delivered;
+
+  const head = isAdmin
+    ? `<input class="field font-medium" value="${esc(i.product_name)}" onchange="upItem('${i.id}','product_name',this.value)">`
+    : `<span class="font-medium">${esc(i.product_name)}</span>`;
+
+  const qtyCtrl = isAdmin
+    ? `<div class="flex items-center gap-1 flex-none"><span class="text-xs" style="color:var(--muted)">受注</span><input class="field mono text-center" style="width:58px" value="${esc(i.qty)}" onchange="upItem('${i.id}','qty',this.value)"><input class="field text-center" style="width:48px" value="${esc(i.unit||"")}" onchange="upItem('${i.id}','unit',this.value)"></div>`
+    : `<span class="mono text-sm flex-none" style="color:var(--muted)">受注 ${esc(i.qty)} ${esc(i.unit||"")}</span>`;
+
+  const progress = ships.length>=2
+    ? `<div class="text-xs mt-1.5 mb-0.5 mono">納品済 <b style="color:var(--jade)">${delivered}</b>${remaining>0?` ／ 残 <b style="color:var(--amber)">${remaining}</b>`:""} <span style="color:var(--muted)">${esc(i.unit||"")}</span></div>`
+    : "";
+
+  const noteCtrl = isAdmin
+    ? `<input class="field text-sm mt-2" placeholder="商品メモ（任意）" value="${esc(i.note||"")}" onchange="upItem('${i.id}','note',this.value)">`
+    : (i.note?`<div class="text-xs mt-1.5" style="color:var(--muted)">📝 ${esc(i.note)}</div>`:"");
+
+  return `
+  <div class="p-3.5 rounded-xl" style="background:var(--bg)">
+    <div class="flex items-start justify-between gap-3">
+      <div class="flex-1 min-w-0">${head}</div>
+      ${qtyCtrl}
+      ${isAdmin?`<button onclick="delItem('${i.id}')" class="btn text-sm flex-none" style="color:var(--coral)">×</button>`:""}
+    </div>
+    ${progress}
+    <div class="space-y-2 mt-2">
+      ${ships.map((s,idx)=>renderShip(s,i,idx,ships.length)).join("") || `<p class="text-xs" style="color:var(--muted)">納品予定がありません</p>`}
+    </div>
+    ${isAdmin?`<button onclick="addShip('${i.id}')" class="btn text-xs w-full py-1.5 mt-2 rounded-lg" style="border:1px dashed var(--line);color:var(--jade)">＋ 分納を追加</button>`:""}
+    ${noteCtrl}
+  </div>`;
+}
+
+function renderShip(s,item,idx,total){
+  const stage = Number(s.stage)||0;
+  const done = stage>=LAST;
+  const stageColor = done ? "var(--jade)" : "var(--amber)";
+  const label = total>1 ? `分納${idx+1}` : "";
+
+  const qtyCtrl = isAdmin
+    ? `<input class="field mono text-center" style="width:54px" value="${esc(s.qty)}" onchange="upShip('${s.id}','qty',this.value)">`
+    : `<span class="mono font-bold text-sm">${esc(s.qty)} ${esc(item.unit||"")}</span>`;
+
+  const stageCtrl = isAdmin
+    ? `<select class="field text-sm" onchange="upShip('${s.id}','stage',this.value)">${STAGES.map((x,k)=>`<option value="${k}" ${k===stage?"selected":""}>${x}</option>`).join("")}</select>`
+    : `<span class="text-sm font-bold" style="color:${stageColor}">${STAGES[stage]}</span>`;
+
+  const etaCtrl = isAdmin
+    ? `<input type="date" class="field mono text-sm" value="${s.eta||""}" onchange="upShip('${s.id}','eta',this.value)">`
+    : `<span class="mono text-sm">${fmtDate(s.eta)||"—"}</span>`;
+
+  const noteCtrl = isAdmin
+    ? `<input class="field text-xs mt-1.5" placeholder="この分納のメモ（任意）" value="${esc(s.note||"")}" onchange="upShip('${s.id}','note',this.value)">`
+    : (s.note?`<div class="text-xs mt-1" style="color:var(--muted)">📝 ${esc(s.note)}</div>`:"");
+
+  return `
+  <div class="rounded-lg p-3" style="background:#fff;border:1px solid var(--line)">
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        ${label?`<span class="text-xs px-1.5 py-0.5 rounded mono" style="background:var(--jade-soft);color:var(--jade)">${label}</span>`:""}
+        ${qtyCtrl}
+      </div>
+      ${isAdmin?`<button onclick="delShip('${s.id}')" class="btn text-sm flex-none" style="color:var(--coral)">×</button>`:""}
+    </div>
+    ${trackHtml(stage)}
+    <div class="flex items-center justify-between gap-2 mt-1">
+      <div>${stageCtrl}</div>
+      <div class="flex items-center gap-1.5"><span class="text-xs" style="color:var(--muted)">納期</span>${etaCtrl}</div>
+    </div>
+    ${noteCtrl}
+  </div>`;
+}
+
+function renderNote(o){
+  // お客様メモ：確認モードでも編集可（お客様の連絡欄）
+  return `
+  <div class="pt-2" style="border-top:1px dashed var(--line)">
+    <label class="text-xs font-medium" style="color:var(--muted)">お客様からの連絡・確認</label>
+    <textarea class="field text-sm mt-1" rows="2" placeholder="例）了解しました／この商品だけ急ぎでお願いします など"
+      onchange="upOrder('${o.id}','customer_note',this.value)">${esc(o.customer_note||"")}</textarea>
+  </div>`;
+}
+
+/* ═══════════════ 更新（Supabase or デモ） ═══════════════ */
+async function upOrder(id,field,val){
+  const o = orders.find(x=>x.id===id); if(o) o[field]=val;
+  if(sb) await sb.from("orders").update({[field]:val}).eq("id",id);
+}
+async function upItem(id,field,val){
+  if(field==="qty") val = Number(val);
+  const i = items.find(x=>x.id===id); if(i) i[field]=val;
+  if(sb) await sb.from("order_items").update({[field]:val}).eq("id",id);
+  render();
+}
+async function upShip(id,field,val){
+  if(field==="stage"||field==="qty") val = Number(val);
+  const s = shipments.find(x=>x.id===id); if(s) s[field]=val;
+  if(sb) await sb.from("order_shipments").update({[field]:val}).eq("id",id);
+  render();
+}
+async function addOrder(){
+  const today = new Date().toISOString().slice(0,10);
+  const row = {order_no:"", order_date:today, title:"", customer_note:""};
+  if(sb){ const {data}=await sb.from("orders").insert(row).select().single(); orders.unshift(data); }
+  else { orders.unshift({id:"o"+Date.now(),...row}); }
+  render();
+}
+async function delOrder(id){
+  if(!confirm("この注文を削除しますか？（商品・分納もすべて削除されます）"))return;
+  if(sb) await sb.from("orders").delete().eq("id",id);   // 子テーブルはカスケード削除
+  const itemIds = itemsOf(id).map(i=>i.id);
+  orders=orders.filter(o=>o.id!==id);
+  items=items.filter(i=>i.order_id!==id);
+  shipments=shipments.filter(s=>!itemIds.includes(s.item_id));
+  render();
+}
+async function addItem(orderId){
+  const irow = {order_id:orderId, product_name:"新しい商品", qty:1, unit:"本", note:""};
+  let item;
+  if(sb){ const {data}=await sb.from("order_items").insert(irow).select().single(); item=data; }
+  else { item={id:"i"+Date.now()+Math.random(),...irow}; }
+  items.push(item);
+  const srow = {item_id:item.id, qty:1, stage:0, eta:null, note:""};
+  if(sb){ const {data}=await sb.from("order_shipments").insert(srow).select().single(); shipments.push(data); }
+  else { shipments.push({id:"s"+Date.now()+Math.random(),...srow}); }
+  render();
+}
+async function delItem(id){
+  if(sb) await sb.from("order_items").delete().eq("id",id);  // 分納はカスケード削除
+  items=items.filter(i=>i.id!==id);
+  shipments=shipments.filter(s=>s.item_id!==id);
+  render();
+}
+async function addShip(itemId){
+  const item = items.find(i=>i.id===itemId);
+  const allocated = shipsOf(itemId).reduce((a,s)=>a+(Number(s.qty)||0),0);
+  const rem = Math.max((Number(item&&item.qty)||0)-allocated,0);
+  const row = {item_id:itemId, qty:rem, stage:0, eta:null, note:""};
+  if(sb){ const {data}=await sb.from("order_shipments").insert(row).select().single(); shipments.push(data); }
+  else { shipments.push({id:"s"+Date.now()+Math.random(),...row}); }
+  render();
+}
+async function delShip(id){
+  if(sb) await sb.from("order_shipments").delete().eq("id",id);
+  shipments=shipments.filter(s=>s.id!==id);
+  render();
+}
+
+/* ═══════════════ 管理ログイン ═══════════════ */
+document.getElementById("adminToggle").onclick = ()=>{ document.getElementById("loginModal").classList.remove("hidden"); document.getElementById("pwInput").focus(); };
+function closeLogin(){ document.getElementById("loginModal").classList.add("hidden"); document.getElementById("pwError").classList.add("hidden"); document.getElementById("pwInput").value=""; }
+function tryLogin(){
+  if(document.getElementById("pwInput").value===ADMIN_PASS){ isAdmin=true; closeLogin(); applyMode(); }
+  else document.getElementById("pwError").classList.remove("hidden");
+}
+function logoutAdmin(){ isAdmin=false; applyMode(); }
+function applyMode(){
+  document.getElementById("adminBar").classList.toggle("hidden",!isAdmin);
+  document.getElementById("adminToggle").classList.toggle("hidden",isAdmin);
+  document.getElementById("modeBadge").textContent = isAdmin?"管理モード":"確認モード";
+  render();
+}
+
+/* ═══════════════ CSV取込 ═══════════════ */
+let csvRows = [], csvFields = [];
+function openImport(){ document.getElementById("importModal").classList.remove("hidden"); }
+function closeImport(){
+  document.getElementById("importModal").classList.add("hidden");
+  document.getElementById("mapArea").classList.add("hidden");
+  document.getElementById("importBtn").classList.add("hidden");
+  document.getElementById("csvFile").value="";
+  csvRows=[]; csvFields=[];
+}
+async function parseCsv(){
+  const f = document.getElementById("csvFile").files[0]; if(!f) return;
+  const enc = document.getElementById("csvEnc").value;
+  const buf = await f.arrayBuffer();
+  let text;
+  if(enc==="auto"){
+    text = new TextDecoder("utf-8").decode(buf);
+    if(text.includes("\uFFFD")) text = new TextDecoder("shift_jis").decode(buf);
+  }else{
+    text = new TextDecoder(enc).decode(buf);
+  }
+  const res = Papa.parse(text,{header:true,skipEmptyLines:true});
+  csvRows = res.data; csvFields = res.meta.fields || [];
+  if(!csvRows.length){ alert("行が読み取れませんでした。文字コードを切り替えてみてください。"); return; }
+  buildMapping();
+}
+function buildMapping(){
+  const opts = `<option value="">— 使わない —</option>` + csvFields.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join("");
+  const guess = (sel,keys)=>{
+    const el=document.getElementById(sel); el.innerHTML=opts;
+    const hit = csvFields.find(f=>keys.some(k=>f.includes(k)));
+    if(hit) el.value=hit;
+    el.onchange=updatePreview;
+  };
+  guess("mapOrderNo",["受注番号","注文番号","伝票","オーダー","order"]);
+  guess("mapDate",["受注日","注文日","日付","date"]);
+  guess("mapProduct",["商品名","品名","商品","product","item"]);
+  guess("mapQty",["受注数","数量","個数","点数","qty","quantity"]);
+  guess("mapUnit",["単位","unit"]);
+  guess("mapKubun",["明細区分","区分"]);
+  guess("mapTaiou",["対応状況","受注状況","ステータス","status"]);
+  guess("mapShipSt",["発送状況","出荷状況"]);
+  guess("mapShipDate",["発送日","出荷日"]);
+  guess("mapDeliv",["納品日","着荷日","到着日"]);
+  guess("mapHope",["配送希望日","希望日","お届け"]);
+  document.getElementById("mapArea").classList.remove("hidden");
+  document.getElementById("importBtn").classList.remove("hidden");
+  updatePreview();
+}
+function updatePreview(){
+  const m = mapping();
+  if(!m.product){ document.getElementById("importPreview").innerHTML="商品名の列を選んでください。"; return; }
+  const groups = groupRows(m);
+  const items = groups.reduce((s,g)=>s+g.items.length,0);
+  const ex = groups.slice(0,3).map(g=>`・${esc(g.order_no||"(番号なし)")}　${fmtFull(g.order_date)||""}（${g.items.length}品目）`).join("<br>");
+  document.getElementById("importPreview").innerHTML =
+    `<b style="color:var(--ink)">${groups.length}件の注文 / ${items}品目</b> を取り込みます<br>${ex}${groups.length>3?"<br>…":""}`;
+}
+function mapping(){
+  return {
+    orderNo:document.getElementById("mapOrderNo").value,
+    date:document.getElementById("mapDate").value,
+    product:document.getElementById("mapProduct").value,
+    qty:document.getElementById("mapQty").value,
+    unit:document.getElementById("mapUnit").value,
+    kubun:document.getElementById("mapKubun").value,
+    taiou:document.getElementById("mapTaiou").value,
+    shipSt:document.getElementById("mapShipSt").value,
+    shipDate:document.getElementById("mapShipDate").value,
+    deliv:document.getElementById("mapDeliv").value,
+    hope:document.getElementById("mapHope").value,
+    exclude:document.getElementById("optExclude").checked,
+    autoStage:document.getElementById("optAutoStage").checked,
+  };
+}
+function gv(r,c){ return c ? (r[c]||"").trim() : ""; }
+const EXCLUDE_NAMES = ["送料","手数料","代引手数料","決済手数料","ポイント利用","値引き","割引"];
+function inferStage(r,m){
+  if(gv(r,m.deliv) && normDate(gv(r,m.deliv))) return 6;            // 納品日あり → 納品完了
+  if(gv(r,m.shipSt).includes("発送") || (gv(r,m.shipDate) && normDate(gv(r,m.shipDate)))) return 5; // 発送済
+  if(gv(r,m.taiou).includes("完了")) return 5;
+  if(gv(r,m.taiou).match(/入荷|準備/)) return 4;
+  return 0;
+}
+function inferEta(r,m){
+  return normDate(gv(r,m.deliv)) || normDate(gv(r,m.shipDate)) || normDate(gv(r,m.hope)) || null;
+}
+function groupRows(m){
+  const map = {};
+  csvRows.forEach(r=>{
+    const prod = gv(r,m.product); if(!prod) return;
+    // 送料・手数料の除外
+    if(m.exclude){
+      if(m.kubun && gv(r,m.kubun) && gv(r,m.kubun)!=="商品") return;   // 明細区分が「商品」以外は除外
+      if(EXCLUDE_NAMES.some(n=>prod===n || prod.startsWith(n))) return;
+    }
+    const key = m.orderNo ? gv(r,m.orderNo) : "__single__";
+    const date = m.date ? normDate(gv(r,m.date)) : null;
+    if(!map[key]){
+      map[key] = {
+        order_no: m.orderNo ? key : "",
+        order_date: date,
+        title: "",
+        items: []
+      };
+    }
+    if(!map[key].order_date && date) map[key].order_date = date;
+    map[key].items.push({
+      product_name: prod,
+      qty: m.qty ? (Number(gv(r,m.qty).replace(/[^\d.]/g,""))||1) : 1,
+      unit: m.unit ? gv(r,m.unit) : "",
+      ship: { stage: m.autoStage ? inferStage(r,m) : 0, eta: m.autoStage ? inferEta(r,m) : null },
+    });
+  });
+  return Object.values(map).sort((a,b)=>(b.order_date||"").localeCompare(a.order_date||""));
+}
+function normDate(s){
+  if(!s) return null;
+  const x = new Date(String(s).slice(0,10).replace(/\//g,"-"));
+  return isNaN(x) ? null : x.toISOString().slice(0,10);
+}
+async function runImport(){
+  const m = mapping();
+  if(!m.product){ alert("商品名の列を選んでください。"); return; }
+  const groups = groupRows(m);
+  for(const g of groups){
+    // 既存の同一注文番号があれば品目を追加、なければ新規作成
+    let order = g.order_no ? orders.find(o=>o.order_no===g.order_no) : null;
+    if(!order){
+      const row = {order_no:g.order_no, order_date:g.order_date, title:g.title, customer_note:""};
+      if(sb){ const {data}=await sb.from("orders").insert(row).select().single(); order=data; orders.unshift(order); }
+      else { order={id:"o"+Date.now()+Math.random(),...row}; orders.unshift(order); }
+    }
+    for(const it of g.items){
+      const irow = {order_id:order.id, product_name:it.product_name, qty:it.qty, unit:it.unit, note:""};
+      let item;
+      if(sb){ const {data}=await sb.from("order_items").insert(irow).select().single(); item=data; }
+      else { item={id:"i"+Date.now()+Math.random(),...irow}; }
+      items.push(item);
+      const srow = {item_id:item.id, qty:it.qty, stage:it.ship.stage||0, eta:it.ship.eta||null, note:""};
+      if(sb){ const {data}=await sb.from("order_shipments").insert(srow).select().single(); shipments.push(data); }
+      else { shipments.push({id:"s"+Date.now()+Math.random(),...srow}); }
+    }
+  }
+  closeImport();
+  render();
+  alert(`取込完了：${groups.length}件の注文を追加しました。分納がある商品は「＋ 分納を追加」で分けられます。`);
+}
+
+/* ═══════════════ ユーティリティ ═══════════════ */
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function fmtDate(d){ if(!d)return""; const x=new Date(d); if(isNaN(x))return d; return `${x.getMonth()+1}/${x.getDate()}`; }
+function fmtFull(d){ if(!d)return""; const x=new Date(d); if(isNaN(x))return d; return `${x.getFullYear()}/${String(x.getMonth()+1).padStart(2,"0")}/${String(x.getDate()).padStart(2,"0")}`; }
+
+load();
+</script>
+</body>
+</html>
